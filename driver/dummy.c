@@ -56,6 +56,6 @@ dummy_init(void)
         return NULL;
     }
     intr_request_irq(DUMMY_IRQ, dummy_isr, INTR_IRQ_SHARED, dev->name, dev); // 割り込みハンドラdummy_isrを登録
-    debugf("intialized device, dev=%s", dev->name);
+    debugf("initialized device, dev=%s", dev->name);
     return dev;
 }

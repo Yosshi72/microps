@@ -1,14 +1,30 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "platform.h"
 
 #include "util.h"
 #include "net.h"
+#include "ip.h"
+
+struct net_protocol {
+    struct net_protocol *next; // pointer to next protocol
+    uint16_t type; // protocol type
+    struct queue_head queue; /* input queue */
+    void (*handler)(const uint8_t *data, size_t len, struct net_device *dev);
+};
+
+struct net_protocol_queue_entry {
+    struct net_device *dev;
+    size_t len;
+    uint8_t data[];
+};
 
 /* NOTE: if you want to add/delete the entries after net_run(), you need to protect these lists with a mutex. */
-static struct net_device *devices; // device list
+static struct net_device *devices; // registered device list
+static struct net_protocol *protocols; // registered protocol list
 
 struct net_device *
 net_device_alloc(void) // deviceの生成
@@ -97,10 +113,54 @@ net_device_output(struct net_device *dev, uint16_t type, const uint8_t *data, si
 }
 
 int
+net_protocol_register(uint16_t type, void (*handler)(const uint8_t *data, size_t len, struct net_device *dev))
+{
+    struct net_protocol *proto;
+
+    for (proto=protocols; proto; proto = proto->next) {
+        if (type == proto->type) { // protocolが重複したらエラー
+            errorf("already registered, type=0x%04x", type);
+            return -1;
+        }
+    }
+    proto = memory_alloc(sizeof(*proto)); // protocol構造体のメモリを確保
+    if (!proto) {
+        errorf("memory_alloc() failure");
+        return -1;
+    }
+    proto->type = type;
+    proto->handler = handler;
+    proto->next = protocols; // protocol listの更新
+    protocols = proto;
+    infof("registered, type=0x%04x", type);
+    return 0;
+}
+
+int
 net_input_handler(uint16_t type, const uint8_t *data, size_t len, struct net_device *dev) // deviceからの入力を処理．deviceが受信したパケットをprotocol stackに渡す
 {
-    debugf("dev=%s, type=0x%04x, len=%zu", dev->name, type, len);
-    debugdump(data, len);
+    struct net_protocol *proto;
+    struct net_protocol_queue_entry *entry;
+
+    for (proto = protocols; proto; proto = proto->next) {
+        if (proto->type == type) { // 受信したパケットのprotocolがprotocol listに含まれていたら，
+            entry = memory_alloc(sizeof(*entry) + len); // entry構造体とdata sizeの分だけメモリ確保
+            if (!entry) {
+                errorf("memory_alloc() failure");
+                return -1;
+            }
+            entry->dev = dev; // 新しいentryにmetadataの設定
+            entry->len = len;
+            memcpy(entry->data, data, len); // 受信データをentryにコピー
+            queue_push(&proto->queue, entry); // queueにentryを追加
+
+            debugf("queue pushed (num:%u), dev=%s, type=0x%04x, len=%zu",
+                proto->queue.num, dev->name, type, len);
+            debugdump(data, len);
+            return 0;
+        }
+    }
+    /* unsupported protocol */ //サポートされていないプロトコルのパケットは捨てる
     return 0;
 }
 
@@ -138,6 +198,10 @@ net_init(void)
 {
     if (intr_init() == -1) { // 割り込み機構の初期化
         errorf("intr_init() failure");
+        return -1;
+    }
+    if (ip_init() == -1) { // protocol stack初期化時にipの初期化関数を呼び出し
+        errorf("ip_init() failure");
         return -1;
     }
     infof("intitialized");

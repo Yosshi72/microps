@@ -157,10 +157,32 @@ net_input_handler(uint16_t type, const uint8_t *data, size_t len, struct net_dev
             debugf("queue pushed (num:%u), dev=%s, type=0x%04x, len=%zu",
                 proto->queue.num, dev->name, type, len);
             debugdump(data, len);
+            intr_raise_irq(INTR_IRQ_SOFTIRQ); // protocolの受信queueにエントリを追加した後，software interruptionを発生させる
             return 0;
         }
     }
     /* unsupported protocol */ //サポートされていないプロトコルのパケットは捨てる
+    return 0;
+}
+
+int
+net_softirq_handler(void) // software interruption発生時に呼び出される
+{
+    struct net_protocol *proto;
+    struct net_protocol_queue_entry *entry;
+
+    for (proto = protocols; proto; proto = proto->next) { // supportしているすべてのプロトコルを確認
+        while (1) {
+            entry = queue_pop(&proto->queue); // 受信queueからentryを取り出す
+            if (!entry) {
+                break;
+            }
+            debugf("queue popped (num:%u), dev=%s, type=0x%04x, len=%zu", proto->queue.num, entry->dev->name, proto->type, entry->len);
+            debugdump(entry->data, entry->len);
+            proto->handler(entry->data, entry->len, entry->dev); // protocolの入力関数を呼び出し
+            memory_free(entry);
+        }
+    }
     return 0;
 }
 

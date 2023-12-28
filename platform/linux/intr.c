@@ -6,6 +6,7 @@
 #include "platform.h"
 
 #include "util.h"
+#include "net.h"
 
 struct irq_entry {
     struct irq_entry *next; // pointer to next irq
@@ -80,6 +81,9 @@ intr_thread(void *arg) // 割り込みスレッドのエントリポイント
             case SIGHUP: // SIGHUP：割り込みスレッドへ終了を通知するためのシグナル
                 terminate = 1; 
                 break;
+            case SIGUSR1:
+                net_softirq_handler(); // software interruption用のsignalを補足したら，net_softirq_handlerを呼び出し
+                break;
             default: // デバイス割り込み用のシグナルが発生した
                 for (entry = irqs; entry; entry = entry->next) { // irqを巡回
                     if (entry->irq == (unsigned int)sig) { // irq番号が一致するエントリの割り込みハンドラを呼び出し
@@ -131,5 +135,6 @@ intr_init(void)
     pthread_barrier_init(&barrier, NULL, 2); // pthread_barrierの初期化
     sigemptyset(&sigmask); // シグナル集合を空にして初期化
     sigaddset(&sigmask, SIGHUP); // シグナル集合にSIGHUPを追加
+    sigaddset(&sigmask, SIGUSR1); // シグナル集合にSIGUSR1を追加し，software interruptionを捕捉できるようにする
     return 0;
 }

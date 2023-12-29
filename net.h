@@ -28,9 +28,16 @@
 #define NET_PROTOCOL_TYPE_ARP  0x0806
 #define NTT_PROTOCOL_TYPE_IPV6 0x86dd
 
+// interfaceの種別
+#define NET_IFACE_FAMILY_IP    1
+#define NET_IFACE_FAMILY_IPV6  2
+
+#define NET_IFACE(x) ((struct net_iface *)(x))
+
 // device情報を格納する構造体
 struct net_device {
     struct net_device *next; // pointer to next device
+    struct net_iface *ifaces; // interface_list
     unsigned int index;
     char name[IFNAMSIZ];
     uint16_t type; // device type defined as NET_DEVICE_TYPE_XXX
@@ -53,10 +60,21 @@ struct net_device_ops {
     int (*transmit)(struct net_device *dev, uint16_t type, const uint8_t *data, size_t len, const void *dst);
 };
 
+struct net_iface { // deviceにinterfaceを紐付ける
+    struct net_iface *next; // pointer to next interface
+    struct net_device *dev; /* back pointer to parent: pointer to device related to interface*/
+    int family; // interface_family
+    /* depends on implementation of protocols. */
+};
+
 extern struct net_device *
 net_device_alloc(void);
 extern int
 net_device_register(struct net_device *dev);
+extern int
+net_device_add_iface(struct net_device *dev, struct net_iface *iface);
+extern struct net_iface *
+net_device_get_iface(struct net_device *dev, int family);
 extern int
 net_device_output(struct net_device *dev, uint16_t type, const uint8_t *data, size_t len, const void *dst);
 

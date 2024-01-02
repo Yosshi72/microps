@@ -10,6 +10,7 @@
 #include "util.h"
 #include "net.h"
 #include "ip.h"
+#include "icmp.h"
 
 struct ip_hdr { // IP header
     uint8_t vhl; // versionとheader長合わせて8bitで扱う
@@ -25,10 +26,17 @@ struct ip_hdr { // IP header
     uint8_t options[]; // 可変長なのでflexible_array_memberとする
 };
 
+struct ip_protocol { // ipの上位プロトコルを管理する構造体
+    struct ip_protocol *next;
+    uint8_t type;
+    void (*handler)(const uint8_t *data, size_t len, ip_addr_t src, ip_addr_t dst, struct ip_iface *iface);
+};
+
 const ip_addr_t IP_ADDR_ANY       = 0x00000000; /* 0.0.0.0 */
 const ip_addr_t IP_ADDR_BROADCAST = 0xffffffff; /* 255.255.255.255 */
 
 static struct ip_iface *ifaces;
+static struct ip_protocol *protocols; // registered protocol list
 
 int
 ip_addr_pton(const char *p, ip_addr_t *n) // ip addressをstr->binary(ip_addr_t)と変換
@@ -160,6 +168,33 @@ ip_iface_select(ip_addr_t addr) // ip interfaceの検索
     return NULL;
 }
 
+int // protocl登録
+ip_protocol_register(uint8_t type, void (*handler)(const uint8_t *data, size_t len, ip_addr_t src, ip_addr_t dst, struct ip_iface *iface))
+{
+    struct ip_protocol *entry;
+
+    // 重複登録の確認
+    for (entry=protocols; entry; entry = entry->next) {
+        if (type == entry->type) { // protocolが重複したらエラー
+            errorf("already registered, type=0x%u", type);
+            return -1;
+        }
+    } 
+
+    // protocolの登録
+    entry = memory_alloc(sizeof(*entry));
+    if (!entry) {
+        errorf("memory_alloc() failure");
+        return -1;
+    }
+    entry->type = type;
+    entry->handler = handler;
+    entry->next = protocols; // ip_protocol listの更新
+    protocols = entry;
+    infof("registered, type=%u", type);
+    return 0;
+}
+
 static void
 ip_input(const uint8_t *data, size_t len, struct net_device *dev) // ip_headerの検証
 {
@@ -218,6 +253,15 @@ ip_input(const uint8_t *data, size_t len, struct net_device *dev) // ip_header�
     debugf("dev=%s, iface=%s, protocol=%u, total=%u", 
         dev->name, ip_addr_ntop(iface->unicast, addr, sizeof(addr)), hdr->protocol, total); // 入力関数が呼び出されたことだけわかればいい
     ip_dump(data, total);
+    // protocolの検索し，データを振り分ける
+    struct ip_protocol *proto;
+    for (proto = protocols; proto; proto = proto->next) {
+        if (hdr->protocol == proto->type) {
+            proto->handler((uint8_t *)hdr + hlen, total - hlen, hdr->src, hdr->dst, iface);
+            return;
+        }
+    }
+    /* unsupported protocol */
 }
 
 static int // devから送信
@@ -256,9 +300,10 @@ ip_output_core(struct ip_iface *iface, uint8_t protocol, const uint8_t *data, si
     hdr->offset = hton16(offset);
     hdr->ttl = 0xff;
     hdr->protocol = protocol;
-    hdr->sum = cksum16((uint16_t *)hdr, hlen, 0);
+    hdr->sum = 0; // 計算前にchecksum fieldを0にする
     hdr->src = src;
     hdr->dst = dst;
+    hdr->sum = cksum16((uint16_t *)hdr, hlen, 0); // hdrの全フィールド埋めてから計算
     memcpy(hdr+1, data, len); // ip headerの直後にdataをコピー
 
     debugf("dev=%s, dst=%s, protocol=%u, len=%u",
